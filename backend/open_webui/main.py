@@ -438,7 +438,11 @@ from open_webui.env import (
     ENABLE_SIGNUP_PASSWORD_CONFIRMATION,
     WEBUI_AUTH_TRUSTED_EMAIL_HEADER,
     WEBUI_AUTH_TRUSTED_NAME_HEADER,
+    WEBUI_AUTH_TRUSTED_API_KEY_HEADER,
+    WEBUI_AUTH_TRUSTED_LITELLM_URL_HEADER,
     WEBUI_AUTH_SIGNOUT_REDIRECT_URL,
+    WEBUI_LITELLM_DEFAULT_MODEL,
+    WEBUI_LITELLM_DEFAULT_URL,
     # SCIM
     SCIM_ENABLED,
     SCIM_TOKEN,
@@ -784,6 +788,10 @@ app.state.config.LDAP_ATTRIBUTE_FOR_GROUPS = LDAP_ATTRIBUTE_FOR_GROUPS
 
 app.state.AUTH_TRUSTED_EMAIL_HEADER = WEBUI_AUTH_TRUSTED_EMAIL_HEADER
 app.state.AUTH_TRUSTED_NAME_HEADER = WEBUI_AUTH_TRUSTED_NAME_HEADER
+app.state.AUTH_TRUSTED_API_KEY_HEADER = WEBUI_AUTH_TRUSTED_API_KEY_HEADER
+app.state.AUTH_TRUSTED_LITELLM_URL_HEADER = WEBUI_AUTH_TRUSTED_LITELLM_URL_HEADER
+app.state.DEFAULT_LITELLM_URL = WEBUI_LITELLM_DEFAULT_URL
+app.state.DEFAULT_LITELLM_MODEL = WEBUI_LITELLM_DEFAULT_MODEL
 app.state.WEBUI_AUTH_SIGNOUT_REDIRECT_URL = WEBUI_AUTH_SIGNOUT_REDIRECT_URL
 app.state.EXTERNAL_PWA_MANIFEST_URL = EXTERNAL_PWA_MANIFEST_URL
 
@@ -1717,6 +1725,11 @@ async def get_app_config(request: Request):
     if user is None:
         onboarding = user_count == 0
 
+    trusted_header_active = False
+    if app.state.AUTH_TRUSTED_EMAIL_HEADER:
+        header_name = app.state.AUTH_TRUSTED_EMAIL_HEADER
+        trusted_header_active = bool(request.headers.get(header_name))
+
     return {
         **({"onboarding": True} if onboarding else {}),
         "status": True,
@@ -1731,7 +1744,7 @@ async def get_app_config(request: Request):
         },
         "features": {
             "auth": WEBUI_AUTH,
-            "auth_trusted_header": bool(app.state.AUTH_TRUSTED_EMAIL_HEADER),
+            "auth_trusted_header": trusted_header_active,
             "enable_signup_password_confirmation": ENABLE_SIGNUP_PASSWORD_CONFIRMATION,
             "enable_ldap": app.state.config.ENABLE_LDAP,
             "enable_api_key": app.state.config.ENABLE_API_KEY,

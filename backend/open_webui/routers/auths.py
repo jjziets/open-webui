@@ -27,12 +27,17 @@ from open_webui.env import (
     WEBUI_AUTH_TRUSTED_EMAIL_HEADER,
     WEBUI_AUTH_TRUSTED_NAME_HEADER,
     WEBUI_AUTH_TRUSTED_GROUPS_HEADER,
+    WEBUI_AUTH_TRUSTED_API_KEY_HEADER,
+    WEBUI_AUTH_TRUSTED_LITELLM_URL_HEADER,
     WEBUI_AUTH_COOKIE_SAME_SITE,
     WEBUI_AUTH_COOKIE_SECURE,
     WEBUI_AUTH_SIGNOUT_REDIRECT_URL,
+    WEBUI_LITELLM_DEFAULT_MODEL,
+    WEBUI_LITELLM_DEFAULT_URL,
     ENABLE_INITIAL_ADMIN_SIGNUP,
     SRC_LOG_LEVELS,
 )
+from open_webui.services.user_settings import upsert_trusted_litellm_connection
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import RedirectResponse, Response, JSONResponse
 from open_webui.config import OPENID_PROVIDER_URL, ENABLE_OAUTH_SIGNUP, ENABLE_LDAP
@@ -463,52 +468,75 @@ async def ldap_auth(request: Request, response: Response, form_data: LdapForm):
 
 @router.post("/signin", response_model=SessionUserResponse)
 async def signin(request: Request, response: Response, form_data: SigninForm):
+    user = None
+    trusted_flow = False
+
     if WEBUI_AUTH_TRUSTED_EMAIL_HEADER:
-        if WEBUI_AUTH_TRUSTED_EMAIL_HEADER not in request.headers:
+        trusted_email = request.headers.get(WEBUI_AUTH_TRUSTED_EMAIL_HEADER)
+        if trusted_email:
+            trusted_flow = True
+            email = trusted_email.lower()
+            name = email
+
+            if WEBUI_AUTH_TRUSTED_NAME_HEADER:
+                name = request.headers.get(WEBUI_AUTH_TRUSTED_NAME_HEADER, email)
+
+            if not Users.get_user_by_email(email.lower()):
+                await signup(
+                    request,
+                    response,
+                    SignupForm(email=email, password=str(uuid.uuid4()), name=name),
+                )
+
+            user = Auths.authenticate_user_by_email(email)
+
+            if WEBUI_AUTH_TRUSTED_GROUPS_HEADER and user and user.role != "admin":
+                group_names = request.headers.get(
+                    WEBUI_AUTH_TRUSTED_GROUPS_HEADER, ""
+                ).split(",")
+                group_names = [name.strip() for name in group_names if name.strip()]
+
+                if group_names:
+                    Groups.sync_groups_by_group_names(user.id, group_names)
+
+            if user and WEBUI_AUTH_TRUSTED_API_KEY_HEADER:
+                api_key = request.headers.get(WEBUI_AUTH_TRUSTED_API_KEY_HEADER)
+                if api_key:
+                    base_url = None
+                    if WEBUI_AUTH_TRUSTED_LITELLM_URL_HEADER:
+                        base_url = request.headers.get(
+                            WEBUI_AUTH_TRUSTED_LITELLM_URL_HEADER
+                        )
+                    upsert_trusted_litellm_connection(
+                        user_id=user.id,
+                        api_key=api_key,
+                        base_url=base_url or WEBUI_LITELLM_DEFAULT_URL,
+                        default_model=WEBUI_LITELLM_DEFAULT_MODEL,
+                    )
+
+        elif WEBUI_AUTH_TRUSTED_EMAIL_HEADER in request.headers:
             raise HTTPException(400, detail=ERROR_MESSAGES.INVALID_TRUSTED_HEADER)
 
-        email = request.headers[WEBUI_AUTH_TRUSTED_EMAIL_HEADER].lower()
-        name = email
+    if not trusted_flow:
+        if WEBUI_AUTH == False:
+            admin_email = "admin@localhost"
+            admin_password = "admin"
 
-        if WEBUI_AUTH_TRUSTED_NAME_HEADER:
-            name = request.headers.get(WEBUI_AUTH_TRUSTED_NAME_HEADER, email)
+            if Users.get_user_by_email(admin_email.lower()):
+                user = Auths.authenticate_user(admin_email.lower(), admin_password)
+            else:
+                if Users.has_users():
+                    raise HTTPException(400, detail=ERROR_MESSAGES.EXISTING_USERS)
 
-        if not Users.get_user_by_email(email.lower()):
-            await signup(
-                request,
-                response,
-                SignupForm(email=email, password=str(uuid.uuid4()), name=name),
-            )
+                await signup(
+                    request,
+                    response,
+                    SignupForm(email=admin_email, password=admin_password, name="User"),
+                )
 
-        user = Auths.authenticate_user_by_email(email)
-        if WEBUI_AUTH_TRUSTED_GROUPS_HEADER and user and user.role != "admin":
-            group_names = request.headers.get(
-                WEBUI_AUTH_TRUSTED_GROUPS_HEADER, ""
-            ).split(",")
-            group_names = [name.strip() for name in group_names if name.strip()]
-
-            if group_names:
-                Groups.sync_groups_by_group_names(user.id, group_names)
-
-    elif WEBUI_AUTH == False:
-        admin_email = "admin@localhost"
-        admin_password = "admin"
-
-        if Users.get_user_by_email(admin_email.lower()):
-            user = Auths.authenticate_user(admin_email.lower(), admin_password)
+                user = Auths.authenticate_user(admin_email.lower(), admin_password)
         else:
-            if Users.has_users():
-                raise HTTPException(400, detail=ERROR_MESSAGES.EXISTING_USERS)
-
-            await signup(
-                request,
-                response,
-                SignupForm(email=admin_email, password=admin_password, name="User"),
-            )
-
-            user = Auths.authenticate_user(admin_email.lower(), admin_password)
-    else:
-        user = Auths.authenticate_user(form_data.email.lower(), form_data.password)
+            user = Auths.authenticate_user(form_data.email.lower(), form_data.password)
 
     if user:
 
