@@ -417,12 +417,34 @@ ENABLE_SIGNUP_PASSWORD_CONFIRMATION = (
     os.environ.get("ENABLE_SIGNUP_PASSWORD_CONFIRMATION", "False").lower() == "true"
 )
 
-WEBUI_AUTH_TRUSTED_EMAIL_HEADER = os.environ.get(
-    "WEBUI_AUTH_TRUSTED_EMAIL_HEADER", None
+def _optional_env(var_name: str, default: str | None = None) -> str | None:
+    value = os.environ.get(var_name, default)
+    if value is not None and value.strip() == "":
+        return None
+    return value
+
+
+WEBUI_AUTH_TRUSTED_EMAIL_HEADER = _optional_env(
+    "WEBUI_AUTH_TRUSTED_EMAIL_HEADER", "X-Webui-Email"
 )
-WEBUI_AUTH_TRUSTED_NAME_HEADER = os.environ.get("WEBUI_AUTH_TRUSTED_NAME_HEADER", None)
-WEBUI_AUTH_TRUSTED_GROUPS_HEADER = os.environ.get(
+WEBUI_AUTH_TRUSTED_NAME_HEADER = _optional_env(
+    "WEBUI_AUTH_TRUSTED_NAME_HEADER", "X-Webui-Name"
+)
+WEBUI_AUTH_TRUSTED_GROUPS_HEADER = _optional_env(
     "WEBUI_AUTH_TRUSTED_GROUPS_HEADER", None
+)
+WEBUI_AUTH_TRUSTED_API_KEY_HEADER = _optional_env(
+    "WEBUI_AUTH_TRUSTED_API_KEY_HEADER", "X-User-Api-Key"
+)
+WEBUI_AUTH_TRUSTED_LITELLM_URL_HEADER = _optional_env(
+    "WEBUI_AUTH_TRUSTED_LITELLM_URL_HEADER", "X-User-Litellm-Url"
+)
+
+WEBUI_LITELLM_DEFAULT_URL = os.environ.get(
+    "WEBUI_LITELLM_DEFAULT_URL", "https://api.ai.cryptolabs.co.za/v1"
+)
+WEBUI_LITELLM_DEFAULT_MODEL = os.environ.get(
+    "WEBUI_LITELLM_DEFAULT_MODEL", "mixtral"
 )
 
 

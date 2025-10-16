@@ -1,6 +1,8 @@
 from test.util.abstract_integration_test import AbstractPostgresTest
 from test.util.mock_user import mock_webui_user
 
+from open_webui.env import WEBUI_LITELLM_DEFAULT_MODEL, WEBUI_LITELLM_DEFAULT_URL
+
 
 class TestAuths(AbstractPostgresTest):
     BASE_PATH = "/api/v1/auths"
@@ -198,3 +200,98 @@ class TestAuths(AbstractPostgresTest):
             response = self.fast_api_client.get(self.create_url("/api_key"))
         assert response.status_code == 200
         assert response.json() == {"api_key": "abc"}
+
+    def test_trusted_header_login_without_api_key(self):
+        response = self.fast_api_client.post(
+            self.create_url("/signin"),
+            json={"email": "unused@openwebui.com", "password": "unused"},
+            headers={"X-Webui-Email": "trusted@example.com"},
+        )
+
+        assert response.status_code == 200
+
+        user = self.users.get_user_by_email("trusted@example.com")
+        assert user is not None
+
+        settings = user.settings.model_dump() if user.settings else {}
+        ui_settings = settings.get("ui") or {}
+        assert "directConnections" not in ui_settings
+
+    def test_trusted_header_creates_direct_connection(self):
+        api_key = "key-123"
+        base_url = "https://litellm.example/v1/"
+
+        response = self.fast_api_client.post(
+            self.create_url("/signin"),
+            json={"email": "ignored@openwebui.com", "password": "ignored"},
+            headers={
+                "X-Webui-Email": "trusted@example.com",
+                "X-Webui-Name": "Trusted User",
+                "X-User-Api-Key": api_key,
+                "X-User-Litellm-Url": base_url,
+            },
+        )
+
+        assert response.status_code == 200
+
+        user = self.users.get_user_by_email("trusted@example.com")
+        assert user is not None
+
+        settings = user.settings.model_dump()
+        ui_settings = settings.get("ui") or {}
+        direct_connections = ui_settings.get("directConnections")
+
+        assert direct_connections is not None
+        assert direct_connections["OPENAI_API_KEYS"][0] == api_key
+        assert direct_connections["OPENAI_API_BASE_URLS"][0] == base_url.rstrip("/")
+        assert (
+            direct_connections["OPENAI_API_CONFIGS"]["0"].get("slug")
+            == "cryptolabs-litellm"
+        )
+
+        models = ui_settings.get("models") or []
+        assert models
+        assert models[0] == WEBUI_LITELLM_DEFAULT_MODEL
+
+    def test_trusted_header_updates_existing_connection(self):
+        email = "trusted@example.com"
+        initial_key = "initial-key"
+        new_key = "rotated-key"
+
+        first_response = self.fast_api_client.post(
+            self.create_url("/signin"),
+            json={"email": "ignored@openwebui.com", "password": "ignored"},
+            headers={
+                "X-Webui-Email": email,
+                "X-User-Api-Key": initial_key,
+                "X-User-Litellm-Url": WEBUI_LITELLM_DEFAULT_URL,
+            },
+        )
+        assert first_response.status_code == 200
+
+        second_response = self.fast_api_client.post(
+            self.create_url("/signin"),
+            json={"email": "ignored@openwebui.com", "password": "ignored"},
+            headers={
+                "X-Webui-Email": email,
+                "X-User-Api-Key": new_key,
+                "X-User-Litellm-Url": WEBUI_LITELLM_DEFAULT_URL,
+            },
+        )
+        assert second_response.status_code == 200
+
+        user = self.users.get_user_by_email(email)
+        assert user is not None
+
+        settings = user.settings.model_dump()
+        ui_settings = settings.get("ui") or {}
+        direct_connections = ui_settings.get("directConnections") or {}
+
+        assert direct_connections["OPENAI_API_KEYS"] == [new_key]
+        assert direct_connections["OPENAI_API_BASE_URLS"] == [
+            WEBUI_LITELLM_DEFAULT_URL.rstrip("/")
+        ]
+
+        models = ui_settings.get("models") or []
+        assert models
+        assert models.count(WEBUI_LITELLM_DEFAULT_MODEL) == 1
