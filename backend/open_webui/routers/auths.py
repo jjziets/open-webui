@@ -1098,3 +1098,63 @@ async def get_api_key(user=Depends(get_current_user)):
         }
     else:
         raise HTTPException(404, detail=ERROR_MESSAGES.API_KEY_NOT_FOUND)
+from fastapi import Query
+from open_webui.utils.auth import verify_signature
+
+############################
+# Trusted Login (Signed)
+############################
+@router.get('/trusted/login')
+async def trusted_login(request: Request, response: Response, payload: str, sig: str, redirect: str | None = None):
+    if not verify_signature(payload, sig):
+        raise HTTPException(status_code=400, detail=ERROR_MESSAGES.INVALID_CRED)
+    import base64, json
+    try:
+        data = json.loads(base64.b64decode(payload).decode())
+    except Exception:
+        raise HTTPException(status_code=400, detail=ERROR_MESSAGES.INVALID_CRED)
+    try:
+        ts = int(data.get('timestamp', 0))
+        if ts and abs(int(time.time()) - ts) > 300:
+            raise HTTPException(status_code=400, detail=ERROR_MESSAGES.INVALID_CRED)
+    except Exception:
+        raise HTTPException(status_code=400, detail=ERROR_MESSAGES.INVALID_CRED)
+    email = (data.get('email') or '').lower()
+    name = data.get('name') or email
+    api_key = data.get('apiKey') or data.get('api_key')
+    base_url = data.get('endpoint') or data.get('base_url') or request.app.state.config.WEBUI_LITELLM_DEFAULT_URL
+    if not email:
+        raise HTTPException(status_code=400, detail=ERROR_MESSAGES.INVALID_CRED)
+    if not Users.get_user_by_email(email.lower()):
+        await signup(request, response, SignupForm(email=email, password=str(uuid.uuid4()), name=name))
+    user = Auths.authenticate_user_by_email(email)
+    if not user:
+        raise HTTPException(status_code=400, detail=ERROR_MESSAGES.INVALID_CRED)
+    if api_key:
+        try:
+            upsert_trusted_litellm_connection(
+                user_id=user.id,
+                api_key=api_key,
+                base_url=base_url or request.app.state.config.WEBUI_LITELLM_DEFAULT_URL,
+                default_model=request.app.state.config.WEBUI_LITELLM_DEFAULT_MODEL,
+            )
+        except Exception:
+            pass
+    expires_delta = parse_duration(request.app.state.config.JWT_EXPIRES_IN)
+    expires_at = None
+    if expires_delta:
+        expires_at = int(time.time()) + int(expires_delta.total_seconds())
+    token = create_token(data={'id': user.id}, expires_delta=expires_delta)
+    datetime_expires_at = (
+        datetime.datetime.fromtimestamp(expires_at, datetime.timezone.utc) if expires_at else None
+    )
+    response.set_cookie(
+        key='token',
+        value=token,
+        expires=datetime_expires_at,
+        httponly=True,
+        samesite=WEBUI_AUTH_COOKIE_SAME_SITE,
+        secure=WEBUI_AUTH_COOKIE_SECURE,
+    )
+    target = redirect or '/'
+    return RedirectResponse(url=target, status_code=302)
