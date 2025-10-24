@@ -1,0 +1,160 @@
+name: Build and Deploy to Docker Hub
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      deploy_to_gpu:
+        description: 'Deploy to GPU server after build'
+        required: false
+        default: 'true'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
+
+env:
+  DOCKER_IMAGE: jjziets/open-webui
+  GPU_HOST: 41.193.204.66
+  GPU_PORT: 101
+  GPU_USER: root
+  GPU_DIR: /home/vast/cryptolabs-ai-platform/services
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+      
+    - name: Get commit info
+      id: commit
+      run: |
+        COMMIT_SHA=$(git rev-parse --short HEAD)
+        COMMIT_MSG=$(git log -1 --pretty=%B)
+        BUILD_TIME=$(date -u "+%Y-%m-%d %H:%M UTC")
+        
+        echo "COMMIT_SHA=$COMMIT_SHA" >> $GITHUB_OUTPUT
+        echo "COMMIT_MSG=$COMMIT_MSG" >> $GITHUB_OUTPUT
+        echo "BUILD_TIME=$BUILD_TIME" >> $GITHUB_OUTPUT
+        
+        echo "Building Open WebUI:"
+        echo "  Commit: $COMMIT_SHA"
+        echo "  Message: $COMMIT_MSG"
+        echo "  Time: $BUILD_TIME"
+        
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v2
+      
+    - name: Login to Docker Hub
+      uses: docker/login-action@v2
+      with:
+        username: ${{ secrets.DOCKER_USERNAME }}
+        password: ${{ secrets.DOCKER_PASSWORD }}
+    
+    - name: Build and push Docker image
+      uses: docker/build-push-action@v4
+      with:
+        context: .
+        push: true
+        tags: |
+          ${{ env.DOCKER_IMAGE }}:latest
+          ${{ env.DOCKER_IMAGE }}:${{ steps.commit.outputs.COMMIT_SHA }}
+          ${{ env.DOCKER_IMAGE }}:main
+        build-args: |
+          BUILD_COMMIT=${{ steps.commit.outputs.COMMIT_SHA }}
+        cache-from: type=registry,ref=${{ env.DOCKER_IMAGE }}:buildcache
+        cache-to: type=registry,ref=${{ env.DOCKER_IMAGE }}:buildcache,mode=max
+        
+    - name: Image build summary
+      run: |
+        echo "======================================"
+        echo "Docker Image Built Successfully"
+        echo "======================================"
+        echo "Image: ${{ env.DOCKER_IMAGE }}:latest"
+        echo "Commit: ${{ steps.commit.outputs.COMMIT_SHA }}"
+        echo "Time: ${{ steps.commit.outputs.BUILD_TIME }}"
+        echo "======================================"
+    
+    - name: Deploy to GPU Server
+      if: github.event_name == 'push' || github.event.inputs.deploy_to_gpu == 'true'
+      uses: appleboy/ssh-action@v0.1.5
+      with:
+        host: ${{ env.GPU_HOST }}
+        port: ${{ env.GPU_PORT }}
+        username: ${{ env.GPU_USER }}
+        key: ${{ secrets.SSH_PRIVATE_KEY }}
+        script: |
+          set -e
+          
+          echo "======================================"
+          echo "Deploying Open WebUI to GPU Server"
+          echo "======================================"
+          echo "Commit: ${{ steps.commit.outputs.COMMIT_SHA }}"
+          echo "Time: ${{ steps.commit.outputs.BUILD_TIME }}"
+          
+          cd ${{ env.GPU_DIR }}
+          
+          # Pull latest image from Docker Hub
+          echo "📥 Pulling latest image..."
+          docker pull ${{ env.DOCKER_IMAGE }}:latest
+          
+          # Stop and remove old container
+          echo "🛑 Stopping old container..."
+          docker-compose stop open-webui || true
+          docker-compose rm -f open-webui || true
+          
+          # Start with new image
+          echo "🚀 Starting new container..."
+          docker-compose up -d open-webui
+          
+          # Wait for startup
+          echo "⏳ Waiting for Open WebUI to start..."
+          sleep 20
+          
+          # Verify
+          echo "✅ Verifying deployment..."
+          docker ps | grep open-webui || echo "⚠️ Container not running!"
+          
+          # Test endpoint
+          echo "🧪 Testing endpoint..."
+          curl -s -o /dev/null -w "WebUI HTTP: %{http_code}\n" http://localhost:8080/ || echo "⚠️ Health check failed"
+          curl -s -o /dev/null -w "WebUI HTTPS: %{http_code}\n" https://webui.ai.cryptolabs.co.za/ || echo "⚠️ External access check failed"
+          
+          # Show recent logs
+          echo ""
+          echo "📋 Recent logs:"
+          docker logs open-webui --tail 10
+          
+          echo ""
+          echo "======================================"
+          echo "✅ Open WebUI Deployment Complete"
+          echo "======================================"
+          echo "Image: ${{ env.DOCKER_IMAGE }}:${{ steps.commit.outputs.COMMIT_SHA }}"
+          echo "Container: open-webui"
+          echo "URL: https://webui.ai.cryptolabs.co.za/"
+          echo ""
+          echo "Test SSO:"
+          echo "1. Login to WordPress: https://www.cryptolabs.co.za/wp-login.php"
+          echo "2. Visit: https://webui.ai.cryptolabs.co.za/"
+          echo "3. Should auto-login via SSO"
+          echo "======================================"
+          
+    - name: Deployment Summary
+      if: always()
+      run: |
+        echo "======================================"
+        echo "Open WebUI Deployment Summary"
+        echo "======================================"
+        echo "Status: ${{ job.status }}"
+        echo "Commit: ${{ steps.commit.outputs.COMMIT_SHA }}"
+        echo "Message: ${{ steps.commit.outputs.COMMIT_MSG }}"
+        echo "Build Time: ${{ steps.commit.outputs.BUILD_TIME }}"
+        echo ""
+        echo "Docker Hub: https://hub.docker.com/r/jjziets/open-webui"
+        echo "WebUI URL: https://webui.ai.cryptolabs.co.za/"
+        echo "======================================"
+
