@@ -795,7 +795,8 @@ async def trusted_login(
     if not email:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=ERROR_MESSAGES.INVALID_CRED)
 
-    if not await Users.get_user_by_email(email, db=db):
+    user = await Users.get_user_by_email(email, db=db)
+    if not user:
         if not ENABLE_SSO_SIGNUP:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -808,8 +809,8 @@ async def trusted_login(
             name,
             db=db,
         )
+        user = await Users.get_user_by_email(email, db=db)
 
-    user = await Auths.authenticate_user_by_email(email, db=db)
     if not user:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=ERROR_MESSAGES.INVALID_CRED)
 

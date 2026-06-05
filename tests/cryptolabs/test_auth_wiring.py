@@ -26,6 +26,9 @@ def test_auth_router_wires_signed_login_and_per_user_litellm_provisioning():
     assert 'upsert_trusted_litellm_connection(' in auths
     assert 'WEBUI_AUTH_TRUSTED_API_KEY_HEADER' in auths
     assert 'WEBUI_AUTH_TRUSTED_LITELLM_URL_HEADER' in auths
+    signed_route = auths.split("@router.get('/trusted/login')", 1)[1].split('@router.', 1)[0]
+    assert 'Auths.authenticate_user_by_email' not in signed_route
+    assert signed_route.count('Users.get_user_by_email(email, db=db)') >= 2
 
 
 def test_legacy_verify_signature_delegates_to_bytes_safe_helper():
