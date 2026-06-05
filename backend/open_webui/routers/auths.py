@@ -802,14 +802,13 @@ async def trusted_login(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail='SSO user creation is disabled. Please contact your administrator.',
             )
-        await signup_handler(
+        user = await signup_handler(
             request,
             email,
             str(uuid.uuid4()),
             name,
             db=db,
         )
-        user = await Users.get_user_by_email(email, db=db)
 
     if not user:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=ERROR_MESSAGES.INVALID_CRED)
