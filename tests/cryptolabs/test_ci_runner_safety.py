@@ -1,0 +1,26 @@
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+DOCKER_WORKFLOW_PATH = REPO_ROOT / '.github' / 'workflows' / 'docker.yaml'
+
+
+def test_docker_workflow_builds_custom_ghcr_image_without_shared_runner_risk():
+    workflow = DOCKER_WORKFLOW_PATH.read_text()
+
+    assert 'runs-on: ubuntu-latest' in workflow
+    assert 'ghcr.io/${GITHUB_REPOSITORY,,}' in workflow
+    assert 'docker/build-push-action' in workflow
+
+    for forbidden in (
+        'self-hosted',
+        'sudo',
+        'systemctl',
+        'docker image prune',
+        'docker system prune',
+        'docker-compose',
+        'docker compose',
+        '/var/lib/docker',
+        'openwebui/open-webui',
+        'DOCKERHUB_IMAGE',
+    ):
+        assert forbidden not in workflow

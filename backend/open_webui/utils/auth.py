@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import base64
-import hashlib
-import hmac
 import json
 import logging
 import os
@@ -36,6 +34,7 @@ from open_webui.env import (
 )
 from open_webui.models.auths import Auths
 from open_webui.models.users import Users
+from open_webui.services.cryptolabs_sso import verify_trusted_signature
 from open_webui.utils.access_control import has_permission
 from pytz import UTC
 
@@ -54,13 +53,7 @@ def verify_signature(payload: str, signature: str) -> bool:
     Verifies the HMAC signature of the received payload.
     """
     try:
-        expected_signature = base64.b64encode(
-            hmac.new(TRUSTED_SIGNATURE_KEY, payload.encode(), hashlib.sha256).digest()
-        ).decode()
-
-        # Compare securely to prevent timing attacks
-        return hmac.compare_digest(expected_signature, signature)
-
+        return verify_trusted_signature(payload, signature, TRUSTED_SIGNATURE_KEY)
     except Exception:
         return False
 

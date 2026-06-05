@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime
+import json
 import logging
 import re
 import time
@@ -29,14 +30,20 @@ from open_webui.env import (
     AIOHTTP_CLIENT_SESSION_SSL,
     ENABLE_INITIAL_ADMIN_SIGNUP,
     ENABLE_OAUTH_TOKEN_EXCHANGE,
+    ENABLE_SSO_SIGNUP,
+    TRUSTED_SIGNATURE_KEY,
     WEBUI_AUTH,
     WEBUI_AUTH_COOKIE_SAME_SITE,
     WEBUI_AUTH_COOKIE_SECURE,
     WEBUI_AUTH_SIGNOUT_REDIRECT_URL,
+    WEBUI_AUTH_TRUSTED_API_KEY_HEADER,
     WEBUI_AUTH_TRUSTED_EMAIL_HEADER,
     WEBUI_AUTH_TRUSTED_GROUPS_HEADER,
+    WEBUI_AUTH_TRUSTED_LITELLM_URL_HEADER,
     WEBUI_AUTH_TRUSTED_NAME_HEADER,
     WEBUI_AUTH_TRUSTED_ROLE_HEADER,
+    WEBUI_LITELLM_DEFAULT_MODEL,
+    WEBUI_LITELLM_DEFAULT_URL,
 )
 from open_webui.internal.db import get_async_session
 from open_webui.models.auths import (
@@ -52,6 +59,12 @@ from open_webui.models.auths import (
 )
 from open_webui.models.groups import Groups
 from open_webui.models.oauth_sessions import OAuthSessions
+from open_webui.services.cryptolabs_litellm import upsert_trusted_litellm_connection
+from open_webui.services.cryptolabs_sso import (
+    decode_trusted_payload,
+    trusted_payload_is_fresh,
+    verify_trusted_signature,
+)
 from open_webui.models.users import (
     UpdateProfileForm,
     UserModel,
@@ -617,6 +630,22 @@ async def signin(
                 elif trusted_role:
                     log.warning(f'Ignoring invalid trusted role header value: {trusted_role}')
 
+            if WEBUI_AUTH_TRUSTED_API_KEY_HEADER:
+                api_key = request.headers.get(WEBUI_AUTH_TRUSTED_API_KEY_HEADER)
+                if api_key:
+                    base_url = (
+                        request.headers.get(WEBUI_AUTH_TRUSTED_LITELLM_URL_HEADER)
+                        if WEBUI_AUTH_TRUSTED_LITELLM_URL_HEADER
+                        else None
+                    )
+                    await upsert_trusted_litellm_connection(
+                        user_id=user.id,
+                        api_key=api_key,
+                        base_url=base_url or WEBUI_LITELLM_DEFAULT_URL,
+                        default_model=WEBUI_LITELLM_DEFAULT_MODEL,
+                        db=db,
+                    )
+
     elif WEBUI_AUTH == False:
         admin_email = 'admin@localhost'
         admin_password = 'admin'
@@ -735,6 +764,89 @@ async def signup_handler(
     )
 
     return user
+
+
+@router.get('/trusted/login')
+async def trusted_login(
+    request: Request,
+    response: Response,
+    payload: str,
+    sig: str,
+    redirect: str | None = None,
+    db: AsyncSession = Depends(get_async_session),
+):
+    if not verify_trusted_signature(payload, sig, TRUSTED_SIGNATURE_KEY):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=ERROR_MESSAGES.INVALID_CRED)
+
+    try:
+        data = decode_trusted_payload(payload)
+    except Exception:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=ERROR_MESSAGES.INVALID_CRED)
+
+    if not trusted_payload_is_fresh(data):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=ERROR_MESSAGES.INVALID_CRED)
+
+    email = (data.get('email') or '').lower()
+    name = data.get('name') or email
+    api_key = data.get('apiKey') or data.get('api_key')
+    base_url = data.get('endpoint') or data.get('base_url') or WEBUI_LITELLM_DEFAULT_URL
+    key_version = data.get('keyVersion') or data.get('key_version')
+
+    if not email:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=ERROR_MESSAGES.INVALID_CRED)
+
+    if not await Users.get_user_by_email(email, db=db):
+        if not ENABLE_SSO_SIGNUP:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail='SSO user creation is disabled. Please contact your administrator.',
+            )
+        await signup_handler(
+            request,
+            email,
+            str(uuid.uuid4()),
+            name,
+            db=db,
+        )
+
+    user = await Auths.authenticate_user_by_email(email, db=db)
+    if not user:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=ERROR_MESSAGES.INVALID_CRED)
+
+    if api_key:
+        await upsert_trusted_litellm_connection(
+            user_id=user.id,
+            api_key=api_key,
+            base_url=base_url,
+            default_model=WEBUI_LITELLM_DEFAULT_MODEL,
+            key_version=key_version,
+            db=db,
+        )
+
+    expires_delta = parse_duration(request.app.state.config.JWT_EXPIRES_IN)
+    token = create_token(data={'id': user.id}, expires_delta=expires_delta)
+    max_age = int(expires_delta.total_seconds()) if expires_delta else 2592000
+    target = redirect if redirect and redirect.startswith('/') else '/'
+    cookie_attributes = (
+        f'; path=/; domain=.ai.cryptolabs.co.za; secure; samesite=none; max-age={max_age}'
+    )
+
+    html_content = f"""<!DOCTYPE html>
+<html>
+<head>
+    <title>Logging in...</title>
+</head>
+<body style="font-family: system-ui; text-align: center; padding-top: 100px;">
+    <h2>Logging you in...</h2>
+    <p>Please wait...</p>
+    <script>
+        localStorage.setItem('token', {json.dumps(token)});
+        document.cookie = 'token=' + {json.dumps(token)} + {json.dumps(cookie_attributes)};
+        window.location.href = {json.dumps(target)};
+    </script>
+</body>
+</html>"""
+    return Response(content=html_content, media_type='text/html', status_code=200)
 
 
 @router.post('/signup', response_model=SessionUserResponse)
