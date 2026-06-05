@@ -827,9 +827,7 @@ async def trusted_login(
     token = create_token(data={'id': user.id}, expires_delta=expires_delta)
     max_age = int(expires_delta.total_seconds()) if expires_delta else 2592000
     target = redirect if redirect and redirect.startswith('/') else '/'
-    cookie_attributes = (
-        f'; path=/; domain=.ai.cryptolabs.co.za; secure; samesite=none; max-age={max_age}'
-    )
+    cookie_attributes = f'; path=/; domain=.ai.cryptolabs.co.za; secure; samesite=none; max-age={max_age}'
 
     html_content = f"""<!DOCTYPE html>
 <html>
